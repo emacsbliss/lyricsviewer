@@ -30,3 +30,5 @@ The JSON format is quite intuitive. The `theme` and `type` fields are optional. 
 * `"theme": "sunset",`
 * `"theme": "rose-gold",`
 * `"theme": "skyblue",`
+* `"theme": "black",`
+* `"theme": "white",`

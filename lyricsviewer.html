@@ -1067,6 +1067,26 @@
         .bg-skyblue .particle:nth-child(18) { top: 63%; left: 19%; animation-duration: 47.2s; animation-delay: -5.9s; transform-origin: -10vw 20vh; box-shadow: 60vmin 0 20vmin currentColor; }
         .bg-skyblue .particle:nth-child(19) { top: 47%; left: 74%; animation-duration: 33.2s; animation-delay: -2.4s; transform-origin: 15vw -5vh; box-shadow: 60vmin 0 20vmin currentColor; }
         .bg-skyblue .particle:nth-child(20) { top: 15%; left: 28%; animation-duration: 63.2s; animation-delay: -8.7s; transform-origin: -20vw 10vh; box-shadow: 60vmin 0 20vmin currentColor; }
+
+        /* ===== Black - Solid, no animation ===== */
+        .bg-black,
+        .theme-thumb[data-theme="black"] {
+            --bg-black-1: #000000;
+        }
+
+        .bg-black {
+            background: #000000;
+        }
+
+        /* ===== White - Solid, no animation ===== */
+        .bg-white,
+        .theme-thumb[data-theme="white"] {
+            --bg-white-1: #ffffff;
+        }
+
+        .bg-white {
+            background: #ffffff;
+        }
     </style>
 </head>
 <body>
@@ -1152,6 +1172,14 @@
                     <div class="theme-thumb" data-theme="skyblue" title="skyblue">
                         <div class="theme-thumb-inner" style="background: linear-gradient(135deg, var(--bg-skyblue-1) 0%, var(--bg-skyblue-2) 50%, var(--bg-skyblue-3) 100%);"></div>
                         <div class="theme-thumb-name">Sky Blue</div>
+                    </div>
+                    <div class="theme-thumb" data-theme="black" title="Black">
+                        <div class="theme-thumb-inner" style="background: #000000;"></div>
+                        <div class="theme-thumb-name">Black</div>
+                    </div>
+                    <div class="theme-thumb" data-theme="white" title="White">
+                        <div class="theme-thumb-inner" style="background: #ffffff;"></div>
+                        <div class="theme-thumb-name">White</div>
                     </div>
                 </div>
             </div>
@@ -1256,6 +1284,18 @@
                 textColor: textColor_sel,
                 textShadow: textShadow_sel,
                 backgroundClass: 'bg-skyblue'
+            },
+            'black': {
+                textColor: '#ffffff',
+                textShadow: textShadow_sel,
+                backgroundClass: 'bg-black',
+                particles: false
+            },
+            'white': {
+                textColor: '#1a1a2e',
+                textShadow: 'none',
+                backgroundClass: 'bg-white',
+                particles: false
             }
         };
 
@@ -1348,7 +1388,7 @@
             layer.className = 'background-layer';
             layer.classList.add(theme.backgroundClass);
 
-            if (theme.backgroundClass && theme.backgroundClass.startsWith('bg-')) {
+            if (theme.backgroundClass && theme.backgroundClass.startsWith('bg-') && theme.particles !== false) {
                 layer.innerHTML = '';
                 for (let i = 0; i < 20; i++) {
                     const span = document.createElement('span');
