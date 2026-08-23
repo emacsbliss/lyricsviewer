@@ -207,6 +207,54 @@
             background: var(--hover-color);
         }
 
+        .drop-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            z-index: 300;
+            background: rgba(0, 0, 0, 0.6);
+            display: none;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .drop-overlay.visible {
+            display: flex;
+        }
+
+        .drop-frame {
+            position: absolute;
+            top: 24px;
+            left: 24px;
+            right: 24px;
+            bottom: 24px;
+            border: 3px dashed rgba(255, 255, 255, 0.7);
+            border-radius: 16px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 12px;
+            color: white;
+            pointer-events: none;
+        }
+
+        .drop-icon {
+            font-size: 3.5rem;
+        }
+
+        .drop-title {
+            font-size: 1.6rem;
+            font-weight: 600;
+        }
+
+        .drop-sub {
+            font-size: 0.9rem;
+            opacity: 0.75;
+        }
+
         .song-list {
             flex: 1;
             overflow-y: auto;
@@ -214,6 +262,7 @@
         }
 
         .song-item {
+            position: relative;
             padding: 8px;
             border-radius: 8px;
             cursor: pointer;
@@ -265,8 +314,8 @@
         }
 
         .song-item-delete {
-            width: 28px;
-            height: 28px;
+            width: 36px;
+            height: 36px;
             border-radius: 50%;
             border: none;
             background: transparent;
@@ -275,21 +324,70 @@
             display: flex;
             align-items: center;
             justify-content: center;
-            font-size: 1.2rem;
-            opacity: 0;
+            font-size: 1.3rem;
+            opacity: 0.55;
             transition: opacity 0.2s, background 0.2s;
             margin-left: 10px;
             flex-shrink: 0;
         }
 
         .song-item:hover .song-item-delete {
-            opacity: 0.6;
+            opacity: 0.8;
+        }
+
+        .song-item.active .song-item-delete {
+            color: #fff;
         }
 
         .song-item-delete:hover {
             opacity: 1 !important;
             background: rgba(255, 0, 0, 0.2);
             color: #ff6b6b;
+        }
+
+        .song-item.confirming {
+            background: rgba(255, 99, 99, 0.15);
+        }
+
+        .song-item.active.confirming {
+            background: rgba(255, 99, 99, 0.35);
+        }
+
+        .song-item.confirming .song-item-delete {
+            opacity: 1;
+            background: #e55555;
+            color: #fff;
+            font-weight: 700;
+        }
+
+        .song-item.dragging {
+            opacity: 0.4;
+            outline: 2px dashed var(--accent-color);
+            outline-offset: -2px;
+        }
+
+        .song-item.drop-before::before,
+        .song-item.drop-after::after {
+            content: '';
+            position: absolute;
+            left: 6px;
+            right: 6px;
+            height: 4px;
+            border-radius: 2px;
+            background: var(--accent-color);
+        }
+
+        .song-item.drop-before::before {
+            top: -5px;
+        }
+
+        .song-item.drop-after::after {
+            bottom: -5px;
+        }
+
+        .sidebar-header.actions {
+            justify-content: flex-start;
+            gap: 8px;
         }
 
         .overlay {
@@ -1117,12 +1215,22 @@
     <div class="overlay" id="overlay"></div>
     <div class="overlay" id="settingsOverlay" style="background: rgba(0,0,0,0.7);"></div>
 
+    <div class="drop-overlay" id="dropOverlay">
+        <div class="drop-frame">
+            <div class="drop-icon">&#128194;</div>
+            <div class="drop-title">Drop songs to add</div>
+            <div class="drop-sub">.json files</div>
+        </div>
+    </div>
+
     <div class="sidebar" id="sidebar">
         <div class="sidebar-header">
             <span class="sidebar-title">Songs</span>
             <button class="close-btn" id="closeSidebar">×</button>
         </div>
-        <div class="sidebar-header">
+        <div class="sidebar-header actions">
+            <button class="clear-all-btn" id="sortAllBtn">Sort A&ndash;Z</button>
+            <button class="clear-all-btn" id="resetOrderBtn" title="Restore upload order">Reset</button>
             <button class="clear-all-btn" id="clearAllBtn">Clear All</button>
         </div>
         <div class="song-list" id="songList"></div>
@@ -1230,7 +1338,12 @@
             currentSongIndex: 0,
             currentPage: 0,
             headerTimeout: null,
-            cursorTimeout: null
+            cursorTimeout: null,
+            dragIndex: null,
+            dragOverIndex: null,
+            pendingDelete: null,
+            pendingDeleteTimer: null,
+            suppressClickUntil: 0
         };
 
         const SONGS_STORAGE_KEY = 'lyrics-viewer-songs';
@@ -1325,9 +1438,12 @@
             songList: document.getElementById('songList'),
             closeSidebar: document.getElementById('closeSidebar'),
             clearAllBtn: document.getElementById('clearAllBtn'),
+            sortAllBtn: document.getElementById('sortAllBtn'),
+            resetOrderBtn: document.getElementById('resetOrderBtn'),
             fileInput: document.getElementById('fileInput'),
             settingsModal: document.getElementById('settingsModal'),
             settingsOverlay: document.getElementById('settingsOverlay'),
+            dropOverlay: document.getElementById('dropOverlay'),
             closeSettings: document.getElementById('closeSettings'),
             fontFamily: document.getElementById('fontFamily'),
             fontSize: document.getElementById('fontSize'),
@@ -1435,39 +1551,52 @@
             }
         }
 
-        function loadFiles(files) {
+        async function loadFiles(files) {
             const jsonFiles = Array.from(files).filter(f => f.name.endsWith('.json'));
             if (jsonFiles.length === 0) return;
 
-            let loadedCount = 0;
-            const newSongs = [];
+            const parsed = await Promise.all(jsonFiles.map(async file => {
+                try {
+                    const song = JSON.parse(await file.text());
+                    return (song.title && song.pages && Array.isArray(song.pages)) ? song : null;
+                } catch (err) {
+                    console.warn('Failed to parse:', file.name, err);
+                    return null;
+                }
+            }));
 
-            jsonFiles.forEach(file => {
-                const reader = new FileReader();
-                reader.onload = e => {
-                    try {
-                        const song = JSON.parse(e.target.result);
-                        if (song.title && song.pages && Array.isArray(song.pages)) {
-                            newSongs.push(song);
-                        }
-                    } catch (err) {
-                        console.warn('Failed to parse:', file.name, err);
-                    }
-                    loadedCount++;
-                    if (loadedCount === jsonFiles.length) {
-                        if (newSongs.length > 0) {
-                            const wasEmpty = state.songs.length === 0;
-                            state.songs = [...state.songs, ...newSongs];
-                            saveToStorage(SONGS_STORAGE_KEY, state.songs);
-                            renderSongList();
-                            if (wasEmpty) {
-                                loadSong(0);
-                            }
-                        }
-                    }
-                };
-                reader.readAsText(file);
+            // stamp upload-order metadata before filtering — parsed maps 1:1 to jsonFiles,
+            // so invalid entries (null) keep the file alignment (gaps in seq are harmless)
+            const seq0 = state.songs.reduce((max, s) => Math.max(max, s.uploadSeq ?? -1), -1) + 1;
+            parsed.forEach((song, i) => {
+                if (!song) return;
+                song.fileName = jsonFiles[i].name;
+                song.uploadSeq = seq0 + i;
             });
+
+            const newSongs = parsed.filter(Boolean);
+            if (newSongs.length === 0) return;
+
+            const wasEmpty = state.songs.length === 0;
+            clearPendingDelete();
+            state.songs = [...state.songs, ...newSongs];
+            saveToStorage(SONGS_STORAGE_KEY, state.songs);
+            renderSongList();
+            if (wasEmpty) {
+                loadSong(0);
+            }
+        }
+
+        function backfillUploadSeq() {
+            if (!state.songs.some(s => s.uploadSeq === undefined)) return;
+            let seq = state.songs.reduce((max, s) => Math.max(max, s.uploadSeq ?? -1), -1) + 1;
+            state.songs.forEach(s => {
+                if (s.uploadSeq === undefined) {
+                    s.uploadSeq = seq++;
+                }
+            });
+            // persist immediately so a later reorder can't re-trigger backfill in the wrong order
+            saveToStorage(SONGS_STORAGE_KEY, state.songs);
         }
 
         function initApp() {
@@ -1486,6 +1615,122 @@
                     loadFiles(e.target.files);
                     e.target.value = '';
                 }
+            });
+        }
+
+        function setupDragAndDrop() {
+            let dragDepth = 0;
+            const hasFiles = e => Array.from(e.dataTransfer.types || []).includes('Files');
+            const hideDropOverlay = () => {
+                dragDepth = 0;
+                elements.dropOverlay.classList.remove('visible');
+            };
+
+            document.addEventListener('dragenter', e => {
+                if (!hasFiles(e)) return;
+                e.preventDefault();
+                dragDepth++;
+                elements.dropOverlay.classList.add('visible');
+            });
+
+            document.addEventListener('dragover', e => {
+                if (state.dragIndex !== null) {
+                    // internal reorder drag — the song list handles its own dragover;
+                    // swallow the event elsewhere so the browser allows a (cancelled) drop
+                    if (elements.songList.contains(e.target)) return;
+                    e.preventDefault();
+                    e.dataTransfer.dropEffect = 'none';
+                    return;
+                }
+                if (!hasFiles(e)) return;
+                e.preventDefault();
+                e.dataTransfer.dropEffect = 'copy';
+            });
+
+            document.addEventListener('dragleave', e => {
+                if (!hasFiles(e)) return;
+                dragDepth--;
+                if (dragDepth <= 0 || e.relatedTarget === null) {
+                    hideDropOverlay();
+                }
+            });
+
+            document.addEventListener('drop', e => {
+                if (state.dragIndex !== null) {
+                    // internal reorder drag dropped outside the song list — cancel quietly
+                    e.preventDefault();
+                    return;
+                }
+                if (!hasFiles(e)) return;
+                e.preventDefault();
+                hideDropOverlay();
+                loadFiles(e.dataTransfer.files);
+            });
+
+            // Esc-cancelled OS file drags fire no drop — reset the overlay when they end
+            document.addEventListener('dragend', hideDropOverlay);
+        }
+
+        function setupSongDragListeners() {
+            let draggedEl = null;
+
+            elements.songList.addEventListener('dragstart', e => {
+                const item = e.target.closest('.song-item');
+                if (!item) return;
+                state.dragIndex = parseInt(item.dataset.index);
+                state.dragOverIndex = null;
+                draggedEl = item;
+                e.dataTransfer.effectAllowed = 'move';
+                // payload is never read — Firefox just requires non-empty drag data
+                e.dataTransfer.setData('text/plain', 'song-reorder');
+                item.classList.add('dragging');
+            });
+
+            elements.songList.addEventListener('dragover', e => {
+                if (state.dragIndex === null) return;
+                e.preventDefault();
+                e.dataTransfer.dropEffect = 'move';
+                const item = e.target.closest('.song-item');
+                let idx;
+                if (item) {
+                    const rect = item.getBoundingClientRect();
+                    idx = parseInt(item.dataset.index) + (e.clientY < rect.top + rect.height / 2 ? 0 : 1);
+                } else {
+                    idx = state.songs.length;
+                }
+                if (state.dragOverIndex !== idx) {
+                    state.dragOverIndex = idx;
+                    updateDropIndicator();
+                }
+            });
+
+            elements.songList.addEventListener('drop', e => {
+                if (state.dragIndex === null) return;
+                e.preventDefault();
+                const from = state.dragIndex;
+                const to = state.dragOverIndex;
+                state.dragIndex = null;
+                state.dragOverIndex = null;
+                if (to === null || to === from) {
+                    return; // dragend cleans up the visuals
+                }
+                const next = state.songs.slice();
+                const [moved] = next.splice(from, 1);
+                next.splice(to > from ? to - 1 : to, 0, moved);
+                applyNewOrder(next);
+            });
+
+            elements.songList.addEventListener('dragend', () => {
+                state.dragIndex = null;
+                state.dragOverIndex = null;
+                if (draggedEl) {
+                    draggedEl.classList.remove('dragging');
+                    draggedEl = null;
+                }
+                updateDropIndicator();
+                // browsers fire no click after a drag; if one leaks through anyway,
+                // only swallow it briefly so a later real click isn't eaten
+                state.suppressClickUntil = performance.now() + 350;
             });
         }
 
@@ -1529,24 +1774,78 @@
             });
         }
 
+        let lastRenderedActive = null;
+
         function renderSongList() {
-            elements.songList.innerHTML = state.songs.map((song, i) => `
-                <div class="song-item ${i === state.currentSongIndex ? 'active' : ''}" data-index="${i}">
+            elements.songList.innerHTML = state.songs.map((song, i) => {
+                const confirming = state.pendingDelete === i;
+                const classes = [
+                    'song-item',
+                    i === state.currentSongIndex ? 'active' : '',
+                    confirming ? 'confirming' : '',
+                    state.dragIndex === i ? 'dragging' : ''
+                ].filter(Boolean).join(' ');
+                return `
+                <div class="${classes}" data-index="${i}" draggable="true">
                     <div class="song-item-info">
                         <div class="song-item-title"><span class="song-item-num">${i + 1}.</span>${song.title}</div>
                         <div class="song-item-artist">${song.artist || ''}</div>
                     </div>
-                    <button class="song-item-delete" data-delete="${i}" title="Delete song">×</button>
-                </div>
-            `).join('');
+                    <button class="song-item-delete" data-delete="${i}" title="${confirming ? 'Click again to confirm' : 'Delete song'}">${confirming ? '✓' : '×'}</button>
+                </div>`;
+            }).join('');
 
-            const activeItem = elements.songList.querySelector('.song-item.active');
-            if (activeItem) {
-                activeItem.scrollIntoView({ block: 'center', behavior: 'smooth' });
+            if (state.currentSongIndex !== lastRenderedActive) {
+                lastRenderedActive = state.currentSongIndex;
+                const activeItem = elements.songList.querySelector('.song-item.active');
+                if (activeItem) {
+                    activeItem.scrollIntoView({ block: 'center', behavior: 'smooth' });
+                }
+            }
+            updateDropIndicator();
+        }
+
+        function clearPendingDelete() {
+            state.pendingDelete = null;
+            if (state.pendingDeleteTimer) {
+                clearTimeout(state.pendingDeleteTimer);
+                state.pendingDeleteTimer = null;
+            }
+        }
+
+        function applyNewOrder(nextSongs) {
+            const activeSong = state.songs[state.currentSongIndex];
+            clearPendingDelete();
+            state.songs = nextSongs;
+            state.currentSongIndex = state.songs.indexOf(activeSong);
+            saveToStorage(SONGS_STORAGE_KEY, state.songs);
+            renderSongList();
+        }
+
+        let dropIndicatorEl = null;
+
+        function updateDropIndicator() {
+            if (dropIndicatorEl) {
+                dropIndicatorEl.el.classList.remove(dropIndicatorEl.type);
+                dropIndicatorEl = null;
+            }
+            if (state.dragIndex === null || state.dragOverIndex === null) {
+                return;
+            }
+            const items = elements.songList.children;
+            if (state.dragOverIndex < state.songs.length) {
+                const el = items[state.dragOverIndex];
+                el.classList.add('drop-before');
+                dropIndicatorEl = { el, type: 'drop-before' };
+            } else if (state.songs.length > 0) {
+                const el = items[state.songs.length - 1];
+                el.classList.add('drop-after');
+                dropIndicatorEl = { el, type: 'drop-after' };
             }
         }
 
         function deleteSong(index) {
+            clearPendingDelete();
             state.songs.splice(index, 1);
             saveToStorage(SONGS_STORAGE_KEY, state.songs);
             if (state.songs.length === 0) {
@@ -1607,26 +1906,43 @@
             elements.pageIndicator.innerHTML = `${typeHtml}<span class="page-num">${pageNum} / ${totalPages}</span>`;
         }
 
+        function fadeTransition(apply) {
+            elements.lyricsText.classList.add('fade-out');
+            setTimeout(() => {
+                apply();
+                elements.lyricsText.classList.remove('fade-out');
+            }, 300);
+        }
+
         function nextPage() {
+            if (state.songs.length === 0) return;
             const song = state.songs[state.currentSongIndex];
             if (state.currentPage < song.pages.length - 1) {
-                elements.lyricsText.classList.add('fade-out');
-                setTimeout(() => {
+                fadeTransition(() => {
                     state.currentPage++;
                     renderPage();
-                    elements.lyricsText.classList.remove('fade-out');
-                }, 300);
+                });
+            } else if (state.currentSongIndex < state.songs.length - 1) {
+                // at the song's last page — continue into the next song
+                fadeTransition(() => loadSong(state.currentSongIndex + 1));
             }
         }
 
         function prevPage() {
+            if (state.songs.length === 0) return;
             if (state.currentPage > 0) {
-                elements.lyricsText.classList.add('fade-out');
-                setTimeout(() => {
+                fadeTransition(() => {
                     state.currentPage--;
                     renderPage();
-                    elements.lyricsText.classList.remove('fade-out');
-                }, 300);
+                });
+            } else if (state.currentSongIndex > 0) {
+                // at the song's first page — continue into the previous song's last page
+                const prevSong = state.songs[state.currentSongIndex - 1];
+                fadeTransition(() => {
+                    loadSong(state.currentSongIndex - 1);
+                    state.currentPage = prevSong.pages.length - 1;
+                    renderPage();
+                });
             }
         }
 
@@ -1731,18 +2047,49 @@
             });
 
             elements.songList.addEventListener('click', e => {
+                if (performance.now() < state.suppressClickUntil) {
+                    return;
+                }
                 const deleteBtn = e.target.closest('.song-item-delete');
                 if (deleteBtn) {
                     e.stopPropagation();
                     const index = parseInt(deleteBtn.dataset.delete);
-                    deleteSong(index);
+                    if (state.pendingDelete === index) {
+                        deleteSong(index);
+                    } else {
+                        clearPendingDelete();
+                        state.pendingDelete = index;
+                        state.pendingDeleteTimer = setTimeout(() => {
+                            clearPendingDelete();
+                            renderSongList();
+                        }, 3000);
+                        renderSongList();
+                    }
                     return;
+                }
+                if (state.pendingDelete !== null) {
+                    clearPendingDelete();
+                    renderSongList();
                 }
                 const item = e.target.closest('.song-item');
                 if (item) {
                     loadSong(parseInt(item.dataset.index));
                     closeSidebar();
                 }
+            });
+
+            elements.sortAllBtn.addEventListener('click', () => {
+                if (state.songs.length < 2) return;
+                const sorted = state.songs.slice().sort((a, b) =>
+                    String(a.title || '').localeCompare(String(b.title || ''), 'zh-Hans-CN-u-co-pinyin')
+                );
+                applyNewOrder(sorted);
+            });
+
+            elements.resetOrderBtn.addEventListener('click', () => {
+                if (state.songs.length < 2) return;
+                const reset = state.songs.slice().sort((a, b) => (a.uploadSeq ?? 0) - (b.uploadSeq ?? 0));
+                applyNewOrder(reset);
             });
 
             elements.closeSidebar.addEventListener('click', closeSidebar);
@@ -1753,6 +2100,8 @@
         function init() {
             setupFileInputListeners();
             setupSettingsListeners();
+            setupDragAndDrop();
+            setupSongDragListeners();
             setupCursorHide();
             loadSettings();
             document.addEventListener('keydown', e => {
@@ -1765,6 +2114,7 @@
             const stored = loadFromStorage(SONGS_STORAGE_KEY);
             if (stored && stored.length > 0) {
                 state.songs = stored;
+                backfillUploadSeq();
                 initApp();
             }
         }
