@@ -1326,6 +1326,11 @@
                         <input type="checkbox" id="boldText"> Bold Text
                     </label>
                 </div>
+                <div class="setting-row">
+                    <label class="setting-label">
+                        <input type="checkbox" id="autoFit"> Auto-fit Text
+                    </label>
+                </div>
             </div>
         </div>
     </div>
@@ -1419,6 +1424,7 @@
             fontSize: 8,
             lineHeight: 1.5,
             bold: false,
+            autoFit: true,
             theme: 'golden-hour'
         };
 
@@ -1427,6 +1433,7 @@
 
         const elements = {
             lyricsContainer: document.getElementById('lyricsContainer'),
+            lyricsContent: document.querySelector('.lyrics-content'),
             backgroundLayer: document.getElementById('backgroundLayer'),
             lyricsText: document.getElementById('lyricsText'),
             songTitle: document.getElementById('songTitle'),
@@ -1451,6 +1458,7 @@
             lineHeight: document.getElementById('lineHeight'),
             lineHeightValue: document.getElementById('lineHeightValue'),
             boldText: document.getElementById('boldText'),
+            autoFit: document.getElementById('autoFit'),
             themeGrid: document.getElementById('themeGrid')
         };
 
@@ -1489,7 +1497,7 @@
             }, 300);
         }
 
-        function applySettings() {
+        function applySettings(refit = true) {
             const root = document.documentElement;
             root.style.setProperty('--lyrics-font-size', `${currentSettings.fontSize}rem`);
             root.style.setProperty('--lyrics-font-family', currentSettings.fontFamily);
@@ -1527,10 +1535,18 @@
             if (elements.boldText) {
                 elements.boldText.checked = currentSettings.bold;
             }
+            if (elements.autoFit) {
+                elements.autoFit.checked = currentSettings.autoFit;
+            }
 
             document.querySelectorAll('.theme-thumb').forEach(thumb => {
                 thumb.classList.toggle('active', thumb.dataset.theme === currentSettings.theme);
             });
+
+            // theme-only changes don't affect text metrics — callers pass refit=false to skip the fit
+            if (refit) {
+                fitLyricsText();
+            }
         }
 
         function openSettings() {
@@ -1764,11 +1780,17 @@
                 saveSettings();
             });
 
+            elements.autoFit.addEventListener('change', e => {
+                currentSettings.autoFit = e.target.checked;
+                applySettings();
+                saveSettings();
+            });
+
             elements.themeGrid.addEventListener('click', e => {
                 const thumb = e.target.closest('.theme-thumb');
                 if (thumb) {
                     currentSettings.theme = thumb.dataset.theme;
-                    applySettings();
+                    applySettings(false);
                     saveSettings();
                 }
             });
@@ -1886,7 +1908,7 @@
                 const otherThemes = themeKeys.filter(t => t !== currentSettings.theme);
                 currentSettings.theme = otherThemes[Math.floor(Math.random() * otherThemes.length)];
             }
-            applySettings();
+            applySettings(false);
             saveSettings();
             renderSongList();
             renderPage();
@@ -1904,6 +1926,47 @@
             const totalPages = song.pages.length;
             const typeHtml = page.type ? `<span class="page-type">${page.type}</span>` : '';
             elements.pageIndicator.innerHTML = `${typeHtml}<span class="page-num">${pageNum} / ${totalPages}</span>`;
+            fitLyricsText();
+        }
+
+        function clearFit() {
+            elements.lyricsText.style.fontSize = '';
+            elements.lyricsText.style.lineHeight = '';
+        }
+
+        function fitLyricsText() {
+            if (!elements.lyricsText || !elements.lyricsContent) {
+                return;
+            }
+            clearFit();
+            if (!currentSettings.autoFit || state.songs.length === 0) {
+                return;
+            }
+            const text = elements.lyricsText;
+            const box = elements.lyricsContent;
+            const cs = getComputedStyle(box);
+            const availW = box.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+            const availH = box.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom);
+            if (!(availW > 0 && availH > 0)) {
+                return;
+            }
+            // measure at the target size, then shrink by a cumulative factor until it fits;
+            // the ratio keeps scaling with the font but never below 1.0 (glyphs would collide)
+            let factor = 1;
+            for (let pass = 0; pass < 3; pass++) {
+                const needW = text.offsetWidth;
+                const needH = text.offsetHeight;
+                if (needW === 0 || needH === 0) {
+                    return;
+                }
+                const s = Math.min(availW / needW, availH / needH, 1);
+                if (s > 0.995) {
+                    break;
+                }
+                factor *= s;
+                text.style.fontSize = `${currentSettings.fontSize * factor}rem`;
+                text.style.lineHeight = String(Math.max(currentSettings.lineHeight * factor, 1.0));
+            }
         }
 
         function fadeTransition(apply) {
@@ -2014,7 +2077,7 @@
                         {
                             const idx = themeKeys.indexOf(currentSettings.theme);
                             currentSettings.theme = themeKeys[(idx + 1) % themeKeys.length];
-                            applySettings();
+                            applySettings(false);
                             saveSettings();
                         }
                         break;
@@ -2023,7 +2086,7 @@
                         {
                             const idx = themeKeys.indexOf(currentSettings.theme);
                             currentSettings.theme = themeKeys[(idx - 1 + themeKeys.length) % themeKeys.length];
-                            applySettings();
+                            applySettings(false);
                             saveSettings();
                         }
                         break;
@@ -2103,6 +2166,16 @@
             setupDragAndDrop();
             setupSongDragListeners();
             setupCursorHide();
+
+            let resizeFitTimer = null;
+            window.addEventListener('resize', () => {
+                clearTimeout(resizeFitTimer);
+                resizeFitTimer = setTimeout(fitLyricsText, 150);
+            });
+            document.addEventListener('fullscreenchange', () => {
+                // wait a frame so the new viewport metrics are committed before measuring
+                requestAnimationFrame(fitLyricsText);
+            });
             loadSettings();
             document.addEventListener('keydown', e => {
                 if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
